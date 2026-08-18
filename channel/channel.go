@@ -36,10 +36,11 @@ type Config struct {
 // inboundBody is the JSON shape clients POST. Token may also be supplied via
 // query (?token=) or Authorization: Bearer.
 type inboundBody struct {
-	Content        string      `json:"content"`
-	ConversationID string      `json:"conversation_id,omitempty"`
-	ThreadID       string      `json:"thread_id,omitempty"`
-	Files          []fileFrame `json:"files,omitempty"`
+	Content         string      `json:"content"`
+	ConversationID  string      `json:"conversation_id,omitempty"`
+	ThreadID        string      `json:"thread_id,omitempty"`
+	Files           []fileFrame `json:"files,omitempty"`
+	ReasoningEffort string      `json:"reasoning_effort,omitempty"` // optional per-turn "low"|"medium"|"high"
 }
 
 type fileFrame struct {
@@ -260,6 +261,10 @@ func (c *Channel) handleChat(w http.ResponseWriter, r *http.Request) {
 	meta := map[string]string{"profile_token": token}
 	if resume {
 		meta[pkg.ResumeIntentMetadataKey] = "true"
+	}
+	// Optional per-turn reasoning-effort override; Core validates the value.
+	if in.ReasoningEffort != "" {
+		meta["reasoning_effort"] = in.ReasoningEffort
 	}
 
 	msg := pkg.InboundMessage{

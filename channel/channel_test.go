@@ -124,6 +124,9 @@ func TestHandleChat_roundtrip(t *testing.T) {
 		if msg.Metadata["profile_token"] != "tok-xyz" {
 			t.Errorf("token not forwarded: %q", msg.Metadata["profile_token"])
 		}
+		if msg.Metadata["reasoning_effort"] != "low" {
+			t.Errorf("reasoning_effort not forwarded: %q", msg.Metadata["reasoning_effort"])
+		}
 		_ = ch.Send(context.Background(), pkg.OutboundMessage{
 			ConversationID: msg.ConversationID,
 			Content:        "hello back",
@@ -131,7 +134,7 @@ func TestHandleChat_roundtrip(t *testing.T) {
 		})
 	}()
 
-	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader(`{"content":"hi"}`))
+	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader(`{"content":"hi","reasoning_effort":"low"}`))
 	req.Header.Set("Authorization", "Bearer tok-xyz")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
