@@ -41,6 +41,7 @@ type inboundBody struct {
 	ThreadID        string      `json:"thread_id,omitempty"`
 	Files           []fileFrame `json:"files,omitempty"`
 	ReasoningEffort string      `json:"reasoning_effort,omitempty"` // optional per-turn "low"|"medium"|"high"
+	AgentID         string      `json:"agent_id,omitempty"`         // optional: scope the turn to a workflow agent (Core grounds on it)
 }
 
 type fileFrame struct {
@@ -207,29 +208,9 @@ func (c *Channel) handleChat(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 
-	token := extractToken(r)
-	if token == "" {
-		http.Error(w, "token required", http.StatusUnauthorized)
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	var in inboundBody
-	if err := json.Unmarshal(body, &in); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if in.Content == "" && len(in.Files) == 0 {
-		http.Error(w, "content or files required", http.StatusBadRequest)
+	token, in, ok := parseChatRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -258,36 +239,20 @@ func (c *Channel) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.pending.Delete(convID)
 
-	meta := map[string]string{"profile_token": token}
-	if resume {
-		meta[pkg.ResumeIntentMetadataKey] = "true"
+	files, err := decodeFiles(in.Files)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-	// Optional per-turn reasoning-effort override; Core validates the value.
-	if in.ReasoningEffort != "" {
-		meta["reasoning_effort"] = in.ReasoningEffort
-	}
-
 	msg := pkg.InboundMessage{
 		ChannelID:      ID,
 		ConversationID: convID,
 		ThreadID:       in.ThreadID,
 		SenderID:       convID,
 		Content:        in.Content,
-		Metadata:       meta,
+		Metadata:       buildMetadata(token, resume, in),
 		Timestamp:      time.Now(),
-	}
-	for _, f := range in.Files {
-		decoded, err := base64.StdEncoding.DecodeString(f.Data)
-		if err != nil {
-			http.Error(w, "base64 decode "+f.Name+": "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		msg.Files = append(msg.Files, pkg.FileAttachment{
-			Name:     f.Name,
-			MimeType: f.MimeType,
-			Data:     decoded,
-			Size:     int64(len(decoded)),
-		})
+		Files:          files,
 	}
 
 	// Push to core; respect client cancellation and our own timeout.
@@ -310,8 +275,75 @@ func (c *Channel) handleChat(w http.ResponseWriter, r *http.Request) {
 		})
 	case <-timeoutCtx.Done():
 		http.Error(w, "timed out waiting for response", http.StatusGatewayTimeout)
-		return
 	}
+}
+
+// parseChatRequest validates the HTTP method and auth, then decodes and
+// sanity-checks the body. On any failure it writes the appropriate error
+// response and returns ok=false, so the caller can simply return.
+func parseChatRequest(w http.ResponseWriter, r *http.Request) (token string, in inboundBody, ok bool) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return "", inboundBody{}, false
+	}
+	token = extractToken(r)
+	if token == "" {
+		http.Error(w, "token required", http.StatusUnauthorized)
+		return "", inboundBody{}, false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return "", inboundBody{}, false
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return "", inboundBody{}, false
+	}
+	if in.Content == "" && len(in.Files) == 0 {
+		http.Error(w, "content or files required", http.StatusBadRequest)
+		return "", inboundBody{}, false
+	}
+	return token, in, true
+}
+
+// buildMetadata assembles the inbound message metadata: the profile token
+// plus the optional per-turn flags Core reads (resume intent, reasoning
+// effort, workflow-agent scope).
+func buildMetadata(token string, resume bool, in inboundBody) map[string]string {
+	meta := map[string]string{"profile_token": token}
+	if resume {
+		meta[pkg.ResumeIntentMetadataKey] = "true"
+	}
+	if in.ReasoningEffort != "" {
+		meta["reasoning_effort"] = in.ReasoningEffort
+	}
+	if in.AgentID != "" {
+		meta["agent_id"] = in.AgentID
+	}
+	return meta
+}
+
+// decodeFiles base64-decodes the inbound file frames into attachments. The
+// error carries the offending file name so the caller can surface it.
+func decodeFiles(frames []fileFrame) ([]pkg.FileAttachment, error) {
+	if len(frames) == 0 {
+		return nil, nil
+	}
+	files := make([]pkg.FileAttachment, 0, len(frames))
+	for _, f := range frames {
+		decoded, err := base64.StdEncoding.DecodeString(f.Data)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode %s: %w", f.Name, err)
+		}
+		files = append(files, pkg.FileAttachment{
+			Name:     f.Name,
+			MimeType: f.MimeType,
+			Data:     decoded,
+			Size:     int64(len(decoded)),
+		})
+	}
+	return files, nil
 }
 
 // extractToken pulls the profile token from query string, Authorization
