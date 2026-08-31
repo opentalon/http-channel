@@ -116,6 +116,9 @@ func (c *Channel) Configure(config map[string]interface{}) error {
 // ID implements pkg.Channel.
 func (c *Channel) ID() string { return ID }
 
+// Kind implements pkg.Channel: the channel TYPE used for type-based routing.
+func (c *Channel) Kind() string { return ID }
+
 // Capabilities implements pkg.Channel.
 func (c *Channel) Capabilities() pkg.Capabilities {
 	return pkg.Capabilities{
